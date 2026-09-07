@@ -379,15 +379,12 @@
             <h3 style="margin-top:0; color:var(--primary);">Save & Print Invoice</h3>
             
             <p style="color:var(--text-muted); font-size:14px; margin-bottom:5px;">Customer Name:</p>
-            <!-- Changed default text. Blank triggers Auto name -->
-            <input type="text" id="modalCustomerName" class="item-name-input" placeholder="Leave blank for auto name" style="margin-bottom:15px; width: 100%;">
+            <input type="text" id="modalCustomerName" class="item-name-input" style="margin-bottom:15px; width: 100%;" placeholder="Leave blank for auto-name">
 
-            <p style="color:var(--text-muted); font-size:14px; margin-bottom:5px;">Amount Left to Pay (₹):</p>
+            <p style="color:var(--text-muted); font-size:14px; margin-bottom:5px;">Amount Left to Pay:</p>
             <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-                <!-- Amount left input -->
-                <input type="number" id="modalBalanceLeft" class="item-name-input" placeholder="0" style="flex: 1; min-width: 0;">
-                <!-- Auto set full payment to 0 balance -->
-                <button class="btn-small btn-a4" style="width: auto; padding: 10px 15px; background-color: var(--success);" onclick="setFullPaid()">Fully Paid</button>
+                <input type="number" id="modalAmountLeft" class="item-name-input" style="flex: 1; margin: 0;" placeholder="0">
+                <button class="btn-small" style="background-color: var(--success); color: white; padding: 0 15px;" onclick="document.getElementById('modalAmountLeft').value = 0">Fully Paid</button>
             </div>
 
             <p style="color:var(--text-muted); font-size:14px; margin-bottom:10px;">Select Print Format:</p>
@@ -427,32 +424,43 @@
 
 <script>
     // --- Satisfying Audio Generator ---
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
     let audioCtx;
 
     function initAudio() {
         if (!audioCtx) {
-            audioCtx = new AudioContext();
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (AudioContextClass) {
+                audioCtx = new AudioContextClass();
+            }
         }
     }
 
     function playClickSound() {
         if (!audioCtx) return;
         if (audioCtx.state === 'suspended') audioCtx.resume();
+
         const osc = audioCtx.createOscillator();
         const gainNode = audioCtx.createGain();
+
         osc.connect(gainNode);
         gainNode.connect(audioCtx.destination);
+
+        // A very quick, satisfying pop/click frequency shape
         osc.type = 'sine';
         osc.frequency.setValueAtTime(800, audioCtx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.05);
+
+        // Volume shaping to sound like a natural tap
         gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
         gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.05);
+
         osc.start(audioCtx.currentTime);
         osc.stop(audioCtx.currentTime + 0.05);
     }
 
+    // Attach click sound global listener
     document.body.addEventListener('pointerdown', function(e) {
+        // Trigger if the user taps any button, input box toggle, bill item, or history item
         const target = e.target.closest('button, .input-box, .bill-item, .hist-info, .close');
         if (target) {
             initAudio(); 
@@ -460,6 +468,7 @@
         }
     });
 
+    // Disable double-tap zoom strictly in Safari
     document.addEventListener('dblclick', function(event) {
         event.preventDefault();
     }, { passive: false });
@@ -471,8 +480,17 @@
     let grandTotal = 0;
     let billItemsData = [];
     let editingIndex = -1; 
-    let invoiceHistory = JSON.parse(localStorage.getItem('quickBillHistory')) || [];
+    let pendingPrintId = null; 
+    let currentCustomerName = "";
     let confirmCallback = null;
+    let invoiceHistory = [];
+
+    // Safely parse local storage in case the online compiler sandboxes it
+    try {
+        invoiceHistory = JSON.parse(localStorage.getItem('quickBillHistory')) || [];
+    } catch (e) {
+        console.warn("Could not access localStorage:", e);
+    }
 
     const priceBox = document.getElementById('priceBox');
     const qtyBox = document.getElementById('qtyBox');
@@ -484,19 +502,20 @@
     const grandTotalDisplay = document.getElementById('grandTotal');
     const itemNameInput = document.getElementById('itemNameInput');
     const deleteItemBtn = document.getElementById('deleteItemBtn');
-    const backspaceBtn = document.getElementById('backspaceBtn');
     
     // --- Hold to Delete Logic ---
+    const backspaceBtn = document.getElementById('backspaceBtn');
     let deleteInterval;
     let deleteTimeout;
 
     function startDelete(e) {
         if (e.type === 'touchstart') e.preventDefault(); 
         backspace(); 
+        
         deleteTimeout = setTimeout(() => {
             deleteInterval = setInterval(() => {
                 backspace();
-                playClickSound(); 
+                playClickSound(); // Play sound during rapid delete
             }, 100); 
         }, 400); 
     }
@@ -518,24 +537,28 @@
         document.getElementById('alertMessage').innerText = message;
         document.getElementById('alertModal').style.display = 'flex';
     }
-    function closeAlertModal() { document.getElementById('alertModal').style.display = 'none'; }
-    
+
+    function closeAlertModal() {
+        document.getElementById('alertModal').style.display = 'none';
+    }
+
     function customConfirm(message, callback) {
         document.getElementById('confirmMessage').innerText = message;
         confirmCallback = callback;
         document.getElementById('confirmModal').style.display = 'flex';
     }
+
     function closeConfirmModal() {
         document.getElementById('confirmModal').style.display = 'none';
         confirmCallback = null;
     }
+
     function executeConfirm() {
         let tempCallback = confirmCallback; 
         closeConfirmModal(); 
         if(tempCallback) tempCallback(); 
     }
 
-    // --- Calculator Logic ---
     function setActive(field) {
         activeField = field;
         if (field === 'price') {
@@ -549,136 +572,180 @@
 
     function addNumber(num) {
         if (activeField === 'price') {
-            if (num === '.' && priceInput.includes('.')) return;
             priceInput += num;
-            priceValue.textContent = priceInput;
+            priceValue.innerText = priceInput;
             pricePlaceholder.style.display = 'none';
         } else {
-            if (num === '.' && qtyInput.includes('.')) return;
             qtyInput += num;
-            qtyValue.textContent = qtyInput;
+            qtyValue.innerText = qtyInput;
             qtyPlaceholder.style.display = 'none';
         }
     }
 
     function backspace() {
-        if (activeField === 'price' && priceInput.length > 0) {
+        if (activeField === 'price') {
             priceInput = priceInput.slice(0, -1);
-            priceValue.textContent = priceInput;
-            if (priceInput.length === 0) pricePlaceholder.style.display = 'inline';
-        } else if (activeField === 'qty' && qtyInput.length > 0) {
+            priceValue.innerText = priceInput;
+            if(priceInput === '') pricePlaceholder.style.display = 'inline';
+        } else {
             qtyInput = qtyInput.slice(0, -1);
-            qtyValue.textContent = qtyInput;
-            if (qtyInput.length === 0) qtyPlaceholder.style.display = 'inline';
+            qtyValue.innerText = qtyInput;
+            if(qtyInput === '') qtyPlaceholder.style.display = 'inline';
         }
     }
 
     function handleEnter() {
-        if (!priceInput || isNaN(priceInput)) {
-            customAlert("Please enter a valid price.");
-            return;
+        if (activeField === 'price') {
+            if (priceInput !== '') setActive('qty');
+        } else if (activeField === 'qty') {
+            if (priceInput !== '' && qtyInput !== '') {
+                addItemToList();
+                resetInputs();
+            }
         }
-        
-        let p = parseFloat(priceInput);
-        let q = qtyInput ? parseFloat(qtyInput) : 1; 
-        let total = p * q;
-        let name = itemNameInput.value.trim() || `Item ${billItemsData.length + 1}`;
+    }
 
-        if (editingIndex >= 0) {
-            billItemsData[editingIndex] = { name, price: p, qty: q, total };
-            editingIndex = -1;
-            deleteItemBtn.style.display = 'none';
+    function renderBillList() {
+        billList.innerHTML = '';
+        grandTotal = 0;
+
+        if (billItemsData.length === 0) {
+            billList.innerHTML = `<div style="text-align: center; padding: 20px; color: #666; font-size: 12px;">Items will appear here. <br>Tap on any item to edit it.</div>`;
+        }
+
+        billItemsData.forEach((item, index) => {
+            item.sr = index + 1;
+            grandTotal += item.total;
+
+            const row = document.createElement('div');
+            if (index === editingIndex) {
+                row.className = 'bill-item editing';
+            } else {
+                row.className = 'bill-item';
+            }
+            row.title = "Tap to edit";
+            row.onclick = () => editItem(index);
+            
+            let displayDetails = item.details;
+            if (item.details === "=") {
+                displayDetails = `<span style="font-weight: bold; font-size: 18px; color: var(--primary);">=</span>`;
+            }
+
+            row.innerHTML = `
+                <div>${item.sr}</div>
+                <div>${displayDetails}</div>
+                <div>${item.price}</div>
+                <div>${item.qty}</div>
+                <div>${item.total.toFixed(2)}</div>
+            `;
+            billList.appendChild(row);
+        });
+
+        grandTotalDisplay.innerText = '₹' + grandTotal.toFixed(2);
+    }
+
+    function addItemToList() {
+        const p = parseFloat(priceInput);
+        const q = parseFloat(qtyInput);
+        const total = p * q;
+        let customName = itemNameInput.value.trim();
+
+        if (editingIndex > -1) {
+            if (customName === '') customName = billItemsData[editingIndex].details;
+            
+            billItemsData[editingIndex] = {
+                details: customName,
+                price: p,
+                qty: q,
+                total: total
+            };
+            editingIndex = -1; 
         } else {
-            billItemsData.push({ name, price: p, qty: q, total });
-        }
+            if (customName === '') {
+                if (billItemsData.length > 0) {
+                    customName = '=';
+                } else {
+                    customName = `Item ${billItemsData.length + 1}`; 
+                }
+            }
 
-        resetInputs();
-        updateUI();
+            billItemsData.push({
+                details: customName,
+                price: p,
+                qty: q,
+                total: total
+            });
+        }
+        renderBillList();
+    }
+
+    function editItem(index) {
+        editingIndex = index; 
+        const itemToEdit = billItemsData[index];
+        priceInput = itemToEdit.price.toString();
+        qtyInput = itemToEdit.qty.toString();
+        
+        if (!itemToEdit.details.startsWith("Item ") && itemToEdit.details !== "=") {
+            itemNameInput.value = itemToEdit.details;
+        } else {
+            itemNameInput.value = ''; 
+        }
+        priceValue.innerText = priceInput;
+        qtyValue.innerText = qtyInput;
+        pricePlaceholder.style.display = 'none';
+        qtyPlaceholder.style.display = 'none';
+        deleteItemBtn.style.display = 'block'; 
+        renderBillList(); 
+        setActive('price');
+    }
+
+    function deleteCurrentItem() {
+        if (editingIndex > -1) {
+            billItemsData.splice(editingIndex, 1);
+            resetInputs();
+            renderBillList();
+        }
     }
 
     function resetInputs() {
         priceInput = '';
         qtyInput = '';
-        itemNameInput.value = '';
-        priceValue.textContent = '';
-        qtyValue.textContent = '';
+        priceValue.innerText = '';
+        qtyValue.innerText = '';
+        itemNameInput.value = ''; 
+        
+        if (billItemsData.length > 0) {
+            itemNameInput.placeholder = 'Auto-fill: =';
+        } else {
+            itemNameInput.placeholder = 'Enter Item Name (Optional)';
+        }
+
         pricePlaceholder.style.display = 'inline';
         qtyPlaceholder.style.display = 'inline';
-        setActive('price');
+        deleteItemBtn.style.display = 'none'; 
         editingIndex = -1;
-        deleteItemBtn.style.display = 'none';
-    }
-
-    function editItem(index) {
-        editingIndex = index;
-        let item = billItemsData[index];
-        itemNameInput.value = item.name.startsWith('Item ') ? '' : item.name;
-        priceInput = item.price.toString();
-        qtyInput = item.qty.toString();
-        
-        priceValue.textContent = priceInput;
-        qtyValue.textContent = qtyInput;
-        pricePlaceholder.style.display = 'none';
-        qtyPlaceholder.style.display = 'none';
-        
-        deleteItemBtn.style.display = 'block';
         setActive('price');
-    }
-
-    function deleteCurrentItem() {
-        if (editingIndex >= 0) {
-            billItemsData.splice(editingIndex, 1);
-            resetInputs();
-            updateUI();
-        }
     }
 
     function requestClearBill() {
-        if (billItemsData.length === 0) return;
-        customConfirm("Clear current bill?", () => {
+        customConfirm("Are you sure you want to clear the entire bill?", function() {
             billItemsData = [];
+            currentCustomerName = "";
+            editingIndex = -1;
+            itemNameInput.placeholder = 'Enter Item Name (Optional)'; 
+            renderBillList();
             resetInputs();
-            updateUI();
         });
     }
 
-    function updateUI() {
-        billList.innerHTML = '';
-        grandTotal = 0;
-
-        if (billItemsData.length === 0) {
-            billList.innerHTML = `<div style="text-align: center; padding: 20px; color: #666; font-size: 12px;" id="emptyText">Items will appear here. <br>Tap on any item to edit it.</div>`;
-            grandTotalDisplay.textContent = '₹0';
-            return;
-        }
-
-        billItemsData.forEach((item, index) => {
-            grandTotal += item.total;
-            let div = document.createElement('div');
-            div.className = `bill-item ${index === editingIndex ? 'editing' : ''}`;
-            div.onclick = () => editItem(index);
-            div.innerHTML = `
-                <div>${index + 1}</div>
-                <div>${item.name}</div>
-                <div>₹${item.price}</div>
-                <div>${item.qty}</div>
-                <div>₹${item.total.toFixed(2)}</div>
-            `;
-            billList.appendChild(div);
-        });
-
-        grandTotalDisplay.textContent = `₹${grandTotal.toFixed(2)}`;
-        billList.scrollTop = billList.scrollHeight;
-    }
-
-    // --- Save and PDF Logic ---
     function openSaveModal() {
         if (billItemsData.length === 0) {
-            customAlert("Add some items before saving.");
+            customAlert("Please add at least one item before saving.");
             return;
         }
-        document.getElementById('modalCustomerName').value = '';
-        document.getElementById('modalBalanceLeft').value = ''; 
+        pendingPrintId = null; 
+        document.getElementById('modalCustomerName').value = "";
+        document.getElementById('modalAmountLeft').value = "";
         document.getElementById('saveModal').style.display = 'flex';
     }
 
@@ -686,128 +753,224 @@
         document.getElementById('saveModal').style.display = 'none';
     }
 
-    function setFullPaid() {
-        document.getElementById('modalBalanceLeft').value = '0';
-    }
-
     function executeSave(isThermal) {
-        let custName = document.getElementById('modalCustomerName').value.trim();
-        if (!custName) {
-            // Assign automatic customer name based on number of saved invoices
-            custName = `Customer ${invoiceHistory.length + 1}`;
-        }
+        let customerName = document.getElementById('modalCustomerName').value.trim();
         
-        let balanceInput = document.getElementById('modalBalanceLeft').value;
-        let balanceLeft = balanceInput === '' ? 0 : parseFloat(balanceInput);
-
-        let invoiceData = {
-            id: Date.now(),
-            date: new Date().toISOString(),
-            customerName: custName,
-            items: [...billItemsData],
-            total: grandTotal,
-            balanceLeft: balanceLeft
-        };
-
-        invoiceHistory.unshift(invoiceData);
-        localStorage.setItem('quickBillHistory', JSON.stringify(invoiceHistory));
-
-        generatePDF(invoiceData, isThermal);
-
-        closeSaveModal();
-        billItemsData = [];
-        resetInputs();
-        updateUI();
-    }
-
-    function generatePDF(invoiceData, isThermal) {
-        const printDiv = document.createElement('div');
-        printDiv.style.padding = '15px';
-        printDiv.style.color = '#000';
-        printDiv.style.background = '#fff';
-        printDiv.style.fontFamily = 'sans-serif';
-        
-        if (isThermal) {
-            printDiv.style.width = '220px';
-            printDiv.style.fontSize = '12px';
-        } else {
-            printDiv.style.width = '100%';
-            printDiv.style.maxWidth = '800px';
-        }
-
-        let itemsHtml = invoiceData.items.map((item, index) => `
-            <div style="display:flex; justify-content:space-between; margin-bottom: 5px; border-bottom: 1px dashed #ccc; padding-bottom: 5px;">
-                <div style="flex:2;">${index+1}. ${item.name}</div>
-                <div style="flex:1; text-align:right;">${item.price} x ${item.qty}</div>
-                <div style="flex:1; text-align:right; font-weight: bold;">₹${item.total.toFixed(2)}</div>
-            </div>
-        `).join('');
-
-        let balanceColor = invoiceData.balanceLeft > 0 ? '#d9534f' : '#5cb85c';
-
-        printDiv.innerHTML = `
-            <h2 style="text-align:center; margin: 0 0 10px 0;">INVOICE</h2>
-            <div style="margin-bottom: 15px; font-size: 0.9em; border-bottom: 2px solid #000; padding-bottom: 10px;">
-                <div><strong>Date:</strong> ${new Date(invoiceData.date).toLocaleString()}</div>
-                <div><strong>Customer:</strong> ${invoiceData.customerName}</div>
-            </div>
-            
-            <div style="font-weight:bold; margin-bottom: 5px; display:flex;">
-                <div style="flex:2;">Item</div>
-                <div style="flex:1; text-align:right;">Rate x Qty</div>
-                <div style="flex:1; text-align:right;">Amt</div>
-            </div>
-            ${itemsHtml}
-            
-            <div style="margin-top: 15px; text-align:right; font-size: 1.1em;">
-                <div><strong>Grand Total: ₹${invoiceData.total.toFixed(2)}</strong></div>
-                <div style="margin-top: 8px; color: ${balanceColor}; font-size: 1em;">
-                    <strong>Amount Left to Pay: ₹${invoiceData.balanceLeft.toFixed(2)}</strong>
-                </div>
-            </div>
-            <div style="text-align:center; margin-top:20px; font-size:0.8em; color:#555;">
-                Thank you for your business!
-            </div>
-        `;
-
-        let opt = {
-            margin:       isThermal ? 0.1 : 0.5,
-            filename:     `Invoice_${invoiceData.customerName.replace(/\s+/g, '_')}.pdf`,
-            image:        { type: 'jpeg', quality: 0.98 },
-            html2canvas:  { scale: 2 },
-            jsPDF:        { unit: 'in', format: isThermal ? [2.5, 4 + (invoiceData.items.length * 0.5)] : 'a4', orientation: 'portrait' }
-        };
-
-        html2pdf().set(opt).from(printDiv).save();
-    }
-
-    // --- History Logic ---
-    function openHistory() {
-        const list = document.getElementById('historyList');
-        list.innerHTML = '';
-        
-        if(invoiceHistory.length === 0) {
-            list.innerHTML = '<p style="text-align:center; color:#888;">No saved invoices yet.</p>';
-        } else {
-            invoiceHistory.forEach((inv, index) => {
-                let div = document.createElement('div');
-                div.className = 'history-item';
-                div.innerHTML = `
-                    <div class="hist-info">
-                        <strong>${inv.customerName}</strong>
-                        <small>${new Date(inv.date).toLocaleDateString()} | Total: ₹${inv.total} | Left: ₹${inv.balanceLeft}</small>
-                    </div>
-                    <div class="hist-actions">
-                        <button class="btn-small btn-thermal" style="margin:0; padding: 6px; box-shadow:none;" onclick="generatePDF(invoiceHistory[${index}], true)" title="Print Thermal">🖨️</button>
-                    </div>
-                `;
-                list.appendChild(div);
+        if (customerName === "") {
+            let maxCustomer = 0;
+            invoiceHistory.forEach(inv => {
+                const match = inv.customerName.match(/^Customer (\d+)$/i);
+                if (match) {
+                    const num = parseInt(match[1]);
+                    if (num > maxCustomer) maxCustomer = num;
+                }
             });
+            customerName = "Customer " + (maxCustomer + 1);
         }
+        
+        let amountLeftRaw = document.getElementById('modalAmountLeft').value;
+        let amountLeft = amountLeftRaw === "" ? 0 : parseFloat(amountLeftRaw);
+        
+        currentCustomerName = customerName;
+        
+        closeSaveModal();
+
+        if (pendingPrintId !== null) {
+            const invToPrint = invoiceHistory.find(inv => inv.id === pendingPrintId);
+            if (invToPrint) {
+                invToPrint.customerName = customerName; 
+                invToPrint.amountLeft = amountLeft;
+                saveToStorage();
+                buildAndDownloadPDF(invToPrint, isThermal);
+            }
+        } else {
+            let dateString = new Date().toLocaleDateString('en-GB'); 
+            const newRecord = {
+                id: Date.now(), 
+                customerName: customerName,
+                date: dateString,
+                total: grandTotal,
+                amountLeft: amountLeft,
+                items: JSON.parse(JSON.stringify(billItemsData)) 
+            };
+            
+            invoiceHistory.push(newRecord);
+            saveToStorage();
+            buildAndDownloadPDF(newRecord, isThermal);
+        }
+    }
+
+    function saveToStorage() {
+        try {
+            localStorage.setItem('quickBillHistory', JSON.stringify(invoiceHistory));
+        } catch (e) {
+            console.warn("Could not save to localStorage:", e);
+        }
+    }
+
+    // --- History Functions ---
+    function openHistory() {
+        renderHistory();
         document.getElementById('historyModal').style.display = 'flex';
     }
 
-    function closeHistory() { document.getElementById('historyModal').style.display = 'none'; }
+    function closeHistory() {
+        document.getElementById('historyModal').style.display = 'none';
+    }
+
+    function loadInvoice(id) {
+        const doLoad = () => {
+            const inv = invoiceHistory.find(i => i.id === id);
+            if (inv) {
+                if (!inv.items || inv.items.length === 0) {
+                    customAlert("This is an older invoice and its item details were not saved. Only newly generated invoices will load fully.");
+                    return;
+                }
+                
+                billItemsData = JSON.parse(JSON.stringify(inv.items));
+                currentCustomerName = inv.customerName;
+                renderBillList();
+                resetInputs();
+                closeHistory();
+            }
+        };
+
+        if (billItemsData.length > 0) {
+            customConfirm("This will replace your current unsaved bill. Continue?", doLoad);
+        } else {
+            doLoad();
+        }
+    }
+
+    function renderHistory() {
+        const historyList = document.getElementById('historyList');
+        historyList.innerHTML = '';
+
+        if (invoiceHistory.length === 0) {
+            historyList.innerHTML = `<div style="text-align: center; color: #888; padding: 20px;">No saved invoices found.</div>`;
+            return;
+        }
+
+        invoiceHistory.forEach(inv => {
+            let amtLeft = inv.amountLeft !== undefined ? parseFloat(inv.amountLeft) : 0;
+            
+            let statusBadge = amtLeft > 0 
+                ? `<span style="color: var(--danger); font-weight: 600; margin-left: 5px;">| Left: ₹${amtLeft.toFixed(2)}</span>`
+                : `<span style="color: var(--success); font-weight: 600; margin-left: 5px;">| ✅ Paid</span>`;
+            
+            const item = document.createElement('div');
+            item.className = 'history-item';
+            item.innerHTML = `
+                <div class="hist-info" onclick="loadInvoice(${inv.id})" title="Tap to load this bill">
+                    <strong>${inv.customerName}</strong>
+                    <small>${inv.date} | ₹${inv.total.toFixed(2)} ${statusBadge}</small>
+                </div>
+                <div class="hist-actions">
+                    <button class="btn-small btn-history" style="padding: 6px; margin: 0;" onclick="loadInvoice(${inv.id})" title="Load Invoice">📂</button>
+                    <button class="btn-small btn-thermal" style="padding: 6px; margin: 0;" onclick="printFromHistory(${inv.id})" title="Print Invoice">🖨️</button>
+                    <button class="btn-small btn-clear" style="padding: 6px; margin: 0;" onclick="deleteInvoice(${inv.id})" title="Delete History">🗑️</button>
+                </div>
+            `;
+            historyList.appendChild(item);
+        });
+    }
+
+    function deleteInvoice(id) {
+        customConfirm("Are you sure you want to delete this saved invoice?", function() {
+            invoiceHistory = invoiceHistory.filter(inv => inv.id !== id);
+            saveToStorage();
+            renderHistory(); 
+        });
+    }
+
+    function printFromHistory(id) {
+        pendingPrintId = id;
+        const inv = invoiceHistory.find(i => i.id === id);
+        if (inv) {
+            document.getElementById('modalCustomerName').value = inv.customerName;
+            document.getElementById('modalAmountLeft').value = inv.amountLeft !== undefined ? inv.amountLeft : 0;
+            closeHistory();
+            document.getElementById('saveModal').style.display = 'flex';
+        }
+    }
+
+    // --- PDF Generation Function ---
+    function buildAndDownloadPDF(invoiceRecord, isThermal) {
+        const invoiceDiv = document.createElement('div');
+        invoiceDiv.style.backgroundColor = 'white';
+        invoiceDiv.style.color = 'black';
+        invoiceDiv.style.padding = '20px';
+        invoiceDiv.style.fontFamily = 'monospace';
+
+        if(isThermal) {
+            invoiceDiv.style.width = '58mm';
+            invoiceDiv.style.fontSize = '12px';
+        } else {
+            invoiceDiv.style.width = '100%';
+            invoiceDiv.style.fontSize = '16px';
+        }
+
+        let htmlContent = `
+            <div style="text-align: center; border-bottom: 1px dashed black; padding-bottom: 10px; margin-bottom: 10px;">
+                <h2 style="margin: 0;">INVOICE</h2>
+                <p style="margin: 5px 0 0 0;">Customer: ${invoiceRecord.customerName}</p>
+                <p style="margin: 5px 0 0 0;">Date: ${invoiceRecord.date}</p>
+            </div>
+            <table style="width: 100%; text-align: center; border-collapse: collapse;">
+                <thead>
+                    <tr style="border-bottom: 1px dashed black;">
+                        <th style="text-align: center; padding: 5px 0;">Item</th>
+                        <th style="text-align: center; padding: 5px 0;">Price</th>
+                        <th style="text-align: center; padding: 5px 0;">Qty</th>
+                        <th style="text-align: center; padding: 5px 0;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        invoiceRecord.items.forEach(item => {
+            let displayDetails = item.details;
+            if (item.details === "=") {
+                displayDetails = '<strong style="font-size: 1.2em;">=</strong>';
+            }
+
+            htmlContent += `
+                <tr>
+                    <td style="text-align: center; padding: 3px 0;">${displayDetails}</td>
+                    <td style="text-align: center; padding: 3px 0;">${item.price}</td>
+                    <td style="text-align: center; padding: 3px 0;">${item.qty}</td>
+                    <td style="text-align: center; padding: 3px 0;">${item.total.toFixed(2)}</td>
+                </tr>
+            `;
+        });
+
+        let amountLeftText = invoiceRecord.amountLeft !== undefined ? `₹${parseFloat(invoiceRecord.amountLeft).toFixed(2)}` : '₹0.00';
+
+        htmlContent += `
+                </tbody>
+            </table>
+            <div style="text-align: right; border-top: 1px dashed black; padding-top: 10px; margin-top: 10px;">
+                <strong>Grand Total: ₹${invoiceRecord.total.toFixed(2)}</strong><br>
+                <strong style="color: #444; font-size: 0.9em; margin-top: 5px; display: inline-block;">Amount Left to Pay: ${amountLeftText}</strong>
+            </div>
+        `;
+
+        invoiceDiv.innerHTML = htmlContent;
+
+        const safeCustomerName = invoiceRecord.customerName.replace(/\s+/g, '_').toLowerCase();
+        const safeDate = invoiceRecord.date.replace(/\//g, '-');
+        const generatedFilename = `${safeCustomerName}_${safeDate}.pdf`;
+
+        const opt = {
+            margin:       isThermal ? 2 : 10,
+            filename:     generatedFilename,
+            image:        { type: 'jpeg', quality: 0.98 },
+            html2canvas:  { scale: 2 },
+            jsPDF:        { unit: 'mm', format: isThermal ? [58, 200] : 'a4', orientation: 'portrait' }
+        };
+
+        html2pdf().set(opt).from(invoiceDiv).save();
+    }
 </script>
 </body>
 </html>
