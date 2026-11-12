@@ -935,7 +935,7 @@
             }
 
             htmlContent += `
-                <tr>
+                <tr style="page-break-inside: avoid;">
                     <td style="text-align: center; padding: 3px 0;">${displayDetails}</td>
                     <td style="text-align: center; padding: 3px 0;">${item.price}</td>
                     <td style="text-align: center; padding: 3px 0;">${item.qty}</td>
@@ -944,12 +944,12 @@
             `;
         });
 
-        let amountLeftText = invoiceRecord.amountLeft !== undefined ? `₹${parseFloat(invoiceRecord.amountLeft).toFixed(2)}` : '₹0.00';
+        let amountLeftText = invoiceRecord.amountLeft !== undefined ? \`₹\${parseFloat(invoiceRecord.amountLeft).toFixed(2)}\` : '₹0.00';
 
         htmlContent += `
                 </tbody>
             </table>
-            <div style="text-align: right; border-top: 1px dashed black; padding-top: 10px; margin-top: 10px;">
+            <div style="text-align: right; border-top: 1px dashed black; padding-top: 10px; margin-top: 10px; page-break-inside: avoid;">
                 <strong>Grand Total: ₹${invoiceRecord.total.toFixed(2)}</strong><br>
                 <strong style="color: #444; font-size: 0.9em; margin-top: 5px; display: inline-block;">Amount Left to Pay: ${amountLeftText}</strong>
             </div>
@@ -966,7 +966,8 @@
             filename:     generatedFilename,
             image:        { type: 'jpeg', quality: 0.98 },
             html2canvas:  { scale: 2 },
-            jsPDF:        { unit: 'mm', format: isThermal ? [58, 200] : 'a4', orientation: 'portrait' }
+            jsPDF:        { unit: 'mm', format: isThermal ? [58, 200] : 'a4', orientation: 'portrait' },
+            pagebreak:    { mode: 'css', avoid: 'tr' }
         };
 
         html2pdf().set(opt).from(invoiceDiv).save();
